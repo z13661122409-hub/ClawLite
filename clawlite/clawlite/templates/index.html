@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ClawLite Dashboard</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    input, button, textarea { padding: 8px; }
+    .row { display: flex; gap: 12px; }
+    .col { flex: 1; }
+    pre { background: #111; color: #eee; padding: 12px; max-height: 420px; overflow: auto; }
+    .card { border: 1px solid #ddd; padding: 12px; border-radius: 8px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h2>ClawLite（OpenClaw 风格 MVP）</h2>
+
+  <div class="card">
+    <div>Dashboard Token（只在你本地/自用部署时用，生产请换成登录体系）</div>
+    <input id="token" style="width:420px" placeholder="X-Token" />
+  </div>
+
+  <div class="card">
+    <div>Goal</div>
+    <textarea id="goal" style="width:100%;height:80px" placeholder="例如：读取 sandbox/logs/access.log，生成今日访问摘要并写入 reports/daily.txt"></textarea>
+    <button onclick="createJob()">Create Job</button>
+    <span id="created"></span>
+  </div>
+
+  <div class="row">
+    <div class="col card">
+      <h3>Jobs</h3>
+      <button onclick="refreshJobs()">Refresh</button>
+      <div id="jobs"></div>
+    </div>
+
+    <div class="col card">
+      <h3>Selected Job</h3>
+      <div id="jobinfo"></div>
+      <div id="approval"></div>
+      <h3>Audit Log</h3>
+      <pre id="audit"></pre>
+    </div>
+  </div>
+
+<script>
+let selectedJob = null;
+
+function headers() {
+  return { "Content-Type": "application/json", "X-Token": document.getElementById("token").value.trim() };
+}
+
+async function refreshJobs() {
+  const r = await fetch("/api/jobs", { headers: headers() });
+  if (!r.ok) { alert("Auth failed?"); return; }
+  const data = await r.json();
+  const box = document.getElementById("jobs");
+  box.innerHTML = "";
+  data.jobs.forEach(j => {
+    const btn = document.createElement("button");
+    btn.textContent = `${j.id} | ${j.status} | ${j.goal.slice(0,30)}`;
+    btn.onclick = () => selectJob(j.id);
+    box.appendChild(btn);
+    box.appendChild(document.createElement("br"));
+  });
+}
+
+async function createJob() {
+  const goal = document.getElementById("goal").value.trim();
+  const r = await fetch("/api/jobs", { method:"POST", headers: headers(), body: JSON.stringify({goal}) });
+  const data = await r.json();
+  if (!r.ok) { alert(data.error || "error"); return; }
+  document.getElementById("created").textContent = `Created: ${data.job_id}`;
+  await refreshJobs();
+  await selectJob(data.job_id);
+}
+
+async function selectJob(id) {
+  selectedJob = id;
+  await refreshJobDetail();
+  if (window._poll) clearInterval(window._poll);
+  window._poll = setInterval(refreshJobDetail, 1500);
+}
+
+async function refreshJobDetail() {
+  if (!selectedJob) return;
+  const r = await fetch(`/api/jobs/${selectedJob}`, { headers: headers() });
+  const job = await r.json();
+  document.getElementById("jobinfo").innerHTML =
+    `<div><b>Status:</b> ${job.status}</div><div><b>Goal:</b> ${job.goal}</div>`;
+
+  // pending approval UI
+  const approval = document.getElementById("approval");
+  approval.innerHTML = "";
+  if (job.status === "awaiting_approval" && job.state && job.state.pending) {
+    const p = job.state.pending;
+    approval.innerHTML = `
+      <div style="border:1px solid #f90;padding:10px;border-radius:8px;margin-top:10px;">
+        <b>Awaiting approval</b><br/>
+        Reason: ${p.reason}<br/>
+        Tool: ${p.step.name}<br/>
+        <pre>${JSON.stringify(p.tool_args, null, 2)}</pre>
+        <button onclick="approve(true)">Approve</button>
+        <button onclick="approve(false)">Reject</button>
+      </div>
+    `;
+  }
+
+  const ar = await fetch(`/api/jobs/${selectedJob}/audit`, { headers: headers() });
+  const a = await ar.json();
+  document.getElementById("audit").textContent = a.audit.map(x =>
+    `[${new Date(x.ts*1000).toLocaleString()}] ${x.kind} ${JSON.stringify(x.payload)}`
+  ).join("\n");
+}
+
+async function approve(ok) {
+  const r = await fetch(`/api/jobs/${selectedJob}/approve`, {
+    method:"POST", headers: headers(), body: JSON.stringify({approved: ok})
+  });
+  const data = await r.json();
+  if (!r.ok) alert("approve failed");
+}
+</script>
+</body>
+</html>
